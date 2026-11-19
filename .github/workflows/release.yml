@@ -1,0 +1,72 @@
+# Release - Publicación de una versión
+# Al crear una etiqueta vX.Y.Z sobre un commit de main, verifica que la versión sea
+# coherente y publica un Release en GitHub con notas de cambios generadas automáticamente.
+name: Release
+
+on:
+  push:
+    tags: ['v[0-9]+.[0-9]+.[0-9]+']
+
+permissions:
+  contents: read
+
+jobs:
+  verificar-version:
+    name: Release - Verificar versión
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Descargar el código (con historial)
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Verificar que la etiqueta coincide con package.json y pertenece a main
+        env:
+          ETIQUETA: ${{ github.ref_name }}
+        run: |
+          version=$(jq -r .version package.json)
+          if [ "$ETIQUETA" != "v$version" ]; then
+            echo "::error title=Etiqueta incoherente::La etiqueta $ETIQUETA no coincide con la versión de package.json (v$version)."
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error title=Etiqueta fuera de main::El commit de la etiqueta $ETIQUETA no pertenece a main."
+            exit 1
+          fi
+          echo "Etiqueta $ETIQUETA coherente con package.json y con main."
+
+      - name: Instalar Node.js (versión definida en .nvmrc)
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Instalar dependencias (npm ci)
+        run: npm ci
+
+      - name: Revisar, probar y compilar la versión
+        run: |
+          npm run lint
+          npm run test:coverage
+          npm run build
+
+  publicar-release:
+    name: Release - Publicar en GitHub
+    needs: verificar-version
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # Solo este trabajo puede escribir en el repositorio (crear el Release).
+    permissions:
+      contents: write
+    steps:
+      - name: Crear el Release con notas automáticas
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ETIQUETA: ${{ github.ref_name }}
+        run: |
+          gh release create "$ETIQUETA" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Versión $ETIQUETA" \
+            --generate-notes \
+            --verify-tag

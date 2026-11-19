@@ -1,0 +1,82 @@
+# QA - Puerta de calidad
+# Controla que main solo reciba cambios revisados: rama de origen permitida,
+# lista de revisión QA completa, versión SemVer incrementada y dependencias
+# de producción sin vulnerabilidades altas o críticas.
+name: QA
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, edited, synchronize, reopened, ready_for_review]
+
+concurrency:
+  group: qa-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  puerta-de-calidad:
+    name: QA - Puerta de calidad
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # Los datos del Pull Request se pasan por variables de entorno (env) y
+      # nunca dentro del script, para evitar la inyección de comandos.
+      - name: Verificar la rama de origen
+        env:
+          RAMA_ORIGEN: ${{ github.head_ref }}
+        run: |
+          case "$RAMA_ORIGEN" in
+            develop|hotfix/*)
+              echo "Rama de origen permitida: $RAMA_ORIGEN"
+              ;;
+            *)
+              echo "::error title=Rama de origen no permitida::A main solo se integra desde develop o hotfix/*. Rama recibida: $RAMA_ORIGEN"
+              exit 1
+              ;;
+          esac
+
+      - name: Verificar la lista de revisión QA del Pull Request
+        env:
+          CUERPO_PR: ${{ github.event.pull_request.body }}
+        run: |
+          pendientes=$(printf '%s\n' "$CUERPO_PR" | grep -c -E '^[[:space:]]*[-*] \[ \]' || true)
+          marcadas=$(printf '%s\n' "$CUERPO_PR" | grep -c -E '^[[:space:]]*[-*] \[[xX]\]' || true)
+          echo "Casillas marcadas: $marcadas | Casillas pendientes: $pendientes"
+          if [ "$marcadas" -eq 0 ] || [ "$pendientes" -gt 0 ]; then
+            echo "::error title=Lista de revisión incompleta::Marca todas las casillas de la descripción del Pull Request antes de integrar a main."
+            exit 1
+          fi
+
+      - name: Descargar el código
+        uses: actions/checkout@v7
+
+      - name: Verificar que la versión de package.json aumentó (SemVer)
+        run: |
+          git fetch --no-tags --depth=1 origin main
+          version_main=$(git show origin/main:package.json | jq -r .version)
+          version_pr=$(jq -r .version package.json)
+          if ! [[ "$version_pr" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error title=Versión inválida::La versión '$version_pr' no tiene el formato MAJOR.MINOR.PATCH."
+            exit 1
+          fi
+          mayor=$(printf '%s\n%s\n' "$version_main" "$version_pr" | sort -V | tail -n 1)
+          if [ "$version_pr" = "$version_main" ] || [ "$mayor" != "$version_pr" ]; then
+            echo "::error title=Versión sin incrementar::package.json indica $version_pr y main ya tiene $version_main. Incrementa la versión con npm version."
+            exit 1
+          fi
+          echo "Versión válida: $version_main -> $version_pr"
+
+      - name: Instalar Node.js (versión definida en .nvmrc)
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Instalar dependencias (npm ci)
+        run: npm ci
+
+      - name: Auditar las dependencias de producción
+        run: npm audit --omit=dev --audit-level=high
