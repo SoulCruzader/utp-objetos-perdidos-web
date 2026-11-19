@@ -1,0 +1,123 @@
+# CD - Despliegue continuo
+# Cada cambio integrado a main se compila y se publica en GitHub Pages (hosting gratuito).
+# También se puede ejecutar a mano (workflow_dispatch) para volver a publicar una
+# versión anterior: elegir la etiqueta vX.Y.Z en "Use workflow from".
+name: CD
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Un solo despliegue a la vez; no se cancela uno en curso para no dejar el sitio a medias.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  compilar:
+    name: CD - Compilar versión de producción
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Descargar el código
+        uses: actions/checkout@v7
+
+      - name: Instalar Node.js (versión definida en .nvmrc)
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Instalar dependencias (npm ci)
+        run: npm ci
+
+      - name: Revisar el código y ejecutar las pruebas
+        run: |
+          npm run lint
+          npm test
+
+      - name: Verificar que las claves de Supabase estén configuradas
+        env:
+          SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL }}
+          SUPABASE_CLAVE: ${{ secrets.VITE_SUPABASE_PUBLISHABLE_KEY }}
+        run: |
+          if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_CLAVE" ]; then
+            echo "::error title=Configuración incompleta::Faltan VITE_SUPABASE_URL (variable) o VITE_SUPABASE_PUBLISHABLE_KEY (secret) en Settings > Secrets and variables > Actions."
+            exit 1
+          fi
+
+      - name: Compilar para producción
+        run: npm run build
+        env:
+          BASE_PATH: /${{ github.event.repository.name }}/
+          VITE_SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.VITE_SUPABASE_PUBLISHABLE_KEY }}
+
+      # GitHub Pages muestra 404.html cuando se abre una ruta interna directamente.
+      # Copiar index.html permite que la aplicación React resuelva esa ruta.
+      - name: Preparar el archivo 404.html
+        run: cp dist/index.html dist/404.html
+
+      - name: Empaquetar el sitio para GitHub Pages
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: dist
+
+  publicar:
+    name: CD - Publicar en GitHub Pages
+    needs: compilar
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Solo este trabajo recibe permisos de escritura sobre Pages.
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.despliegue.outputs.page_url }}
+    outputs:
+      url: ${{ steps.despliegue.outputs.page_url }}
+    steps:
+      - name: Publicar en GitHub Pages
+        id: despliegue
+        uses: actions/deploy-pages@v5
+
+  verificar-sitio:
+    name: CD - Verificar sitio publicado
+    needs: publicar
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Comprobar que el sitio responde y carga sus archivos
+        env:
+          URL_SITIO: ${{ needs.publicar.outputs.url }}
+        run: |
+          set -euo pipefail
+          base="${URL_SITIO%/}/"
+          origen=$(printf '%s' "$base" | sed -E 's#^(https?://[^/]+).*$#\1#')
+          for intento in 1 2 3 4 5 6 7 8; do
+            codigo=$(curl --silent --location --output pagina.html --write-out '%{http_code}' "$base" || true)
+            if [ "$codigo" = "200" ] && grep -q 'id="root"' pagina.html; then
+              ruta_js=$(grep -oE 'src="[^"]+\.js"' pagina.html | head -n 1 | sed -E 's/^src="//; s/"$//' || true)
+              if [ -n "$ruta_js" ]; then
+                codigo_js=$(curl --silent --location --output /dev/null --write-out '%{http_code}' "${origen}${ruta_js}" || true)
+                if [ "$codigo_js" = "200" ]; then
+                  echo "Sitio disponible y con sus archivos cargando: $base"
+                  exit 0
+                fi
+                echo "Intento $intento: la página responde, pero $ruta_js devolvió HTTP $codigo_js."
+              else
+                echo "Intento $intento: la página no referencia ningún archivo JavaScript."
+              fi
+            else
+              echo "Intento $intento: HTTP $codigo (se esperaba 200 y un contenedor id=\"root\")."
+            fi
+            sleep 10
+          done
+          echo "::error title=Sitio no disponible::El sitio publicado no respondió correctamente en $base"
+          exit 1

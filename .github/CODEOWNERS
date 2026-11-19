@@ -1,0 +1,13 @@
+# CODEOWNERS - define quién debe revisar cada cambio.
+# Reemplaza los nombres de ejemplo por los usuarios reales de GitHub del equipo.
+# Con la regla "Require review from Code Owners" activa en main, la aprobación
+# de estas personas es obligatoria. Prevalece la última regla que coincide.
+
+# Regla general: QA revisa todo lo que llega a main.
+*                    @CyberPigeonn
+
+# Automatización y configuración del repositorio: líder de CI/CD y QA.
+/.github/            @sebastiansantinotuerosfajardo-ui @CyberPigeonn
+/package.json        @sebastiansantinotuerosfajardo-ui @CyberPigeonn
+/package-lock.json   @sebastiansantinotuerosfajardo-ui @CyberPigeonn
+/vite.config.js      @sebastiansantinotuerosfajardo-ui @CyberPigeonn
