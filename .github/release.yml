@@ -1,0 +1,24 @@
+# Agrupa las notas de cada Release según las etiquetas de los Pull Requests.
+changelog:
+  exclude:
+    labels:
+      - ignore-for-release
+  categories:
+    - title: Cambios incompatibles (MAJOR)
+      labels:
+        - breaking-change
+    - title: Funcionalidades nuevas (MINOR)
+      labels:
+        - enhancement
+    - title: Correcciones (PATCH)
+      labels:
+        - bug
+    - title: Documentación
+      labels:
+        - documentation
+    - title: Dependencias
+      labels:
+        - dependencies
+    - title: Otros cambios
+      labels:
+        - '*'
